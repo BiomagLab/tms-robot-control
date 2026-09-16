@@ -140,6 +140,36 @@ ROBOT_CONFIG = {
     },
 }
 
+# Coil-to-coil collision avoidance. Distances and offsets are expressed in mm.
+# These initial values preserve the shape of the prototype curve, while using a
+# practical stop threshold that must be validated on the physical setup.
+COLLISION_AVOIDANCE_CONFIG = {
+    "strength": 25.0,
+    "safety_margin": 22.0,
+    "working_distance": 12.0,
+    "stop_distance": 5.0,
+    "max_offset": 2.0,
+    "max_delta_time": 0.05,
+    "smoothing": 0.2,
+    "measurement_timeout": 0.25,
+    "stop_release_distance": 2.0,
+    # Dynamic clearance = speed * reaction_time + speed^2 / (2 * deceleration).
+    # Initial physical assumptions; validate them with measured stopping tests.
+    "reaction_time": 0.2,
+    "safe_deceleration": 500.0,
+    "velocity_smoothing": 0.8,
+    "max_closing_speed": 300.0,
+}
+
+# Per-face expansion of the registered coil bounding box, in mm. Lateral
+# expansion applies to both in-plane axes; face expansion applies along the
+# normal to the coil plane, on its front and back faces.
+COIL_COLLISION_GEOMETRY_CONFIG = {
+    "half_thickness": 7.0,
+    "lateral_expansion": 1.5,
+    "face_expansion": 3.0,
+}
+
 # Publisher messages from invesalius to any robot
 # It's important these message to be in the PUB_MESSAGES list too
 PUB_MESSAGES_WL = [
@@ -168,7 +198,8 @@ PUB_MESSAGES = [
     "Neuronavigation to Robot: Request config",
     "Dashboard to Robot: Request pid factors",
     "Neuronavigation to Robot: Set coil index",
-    "Neuronavigation to Robot: Reset errors"
+    "Neuronavigation to Robot: Reset errors",
+    "Neuronavigation to Robot: Set coil collision registrations",
 ]
 
 FUNCTION_CONNECT_TO_ROBOT = 0
@@ -192,3 +223,4 @@ FUNCTION_REQUEST_CONFIG = 17
 FUNCTION_REQUEST_PID = 18
 FUNCTION_SET_COIL_INDEX = 19
 FUNCTION_CLEAN_ERRORS = 20
+FUNCTION_SET_COLLISION_REGISTRATIONS = 21

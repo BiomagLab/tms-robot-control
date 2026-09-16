@@ -15,6 +15,12 @@ import robot.transformations as tr
 from robot.control.algorithms.directly_PID import DirectlyPIDAlgorithm
 from robot.control.algorithms.directly_upward import DirectlyUpwardAlgorithm
 from robot.control.algorithms.radially_outward import RadiallyOutwardAlgorithm
+from robot.control.coil_geometry import CoilCollisionTracker
+from robot.control.collision_avoidance import (
+    CollisionAvoidanceController,
+    CollisionStage,
+    RepulsionConfig,
+)
 from robot.control.color import Color
 from robot.control.PID import PIDControllerGroup
 from robot.control.robot_state_controller import RobotState, RobotStateController
@@ -89,6 +95,15 @@ class RobotControl:
             # Force sensor is safety-only; PID uses pressure feedback.
             use_force=False, use_pressure=self.pressure_pid_active, robot_type=self.config["robot"],
         )
+        self.collision_avoidance = CollisionAvoidanceController(
+            RepulsionConfig(**const.COLLISION_AVOIDANCE_CONFIG)
+        )
+        self.collision_tracker = CoilCollisionTracker(self.collision_avoidance)
+        self._last_collision_command_time = time.monotonic()
+        self._collision_safety_active = False
+        self._collision_stop_commanded = False
+        self._collision_repulsion_active = False
+        self._collision_warning = None
 
         self.force_sensor = None
         self.pressure_sensor = None
@@ -247,12 +262,22 @@ class RobotControl:
         if len(data) > 1:
             poses = data["poses"]
             visibilities = data["visibilities"]
+            self._update_collision_from_tracker_poses(
+                poses, visibilities, data.get("_received_at", time.monotonic())
+            )
             self.tracker.SetCoordinates(
                 np.vstack([poses[0], poses[1], poses[self.coil_index]]), [visibilities[0], visibilities[1], visibilities[self.coil_index]]
             )
 
     def on_set_coil_index(self, data):
-        self.coil_index = data["coil_idx"]
+        coil_index = data["coil_idx"]
+        try:
+            self.collision_tracker.set_coil_index(coil_index)
+        except (TypeError, ValueError) as error:
+            print(f"Invalid coil index: {error}")
+            return False
+        self.coil_index = coil_index
+        return True
 
     def on_create_point(self, data):
         if self.create_calibration_point():
@@ -1306,10 +1331,20 @@ class RobotControl:
 
         warning = None
 
+        collision_warning = self._enforce_collision_stop()
+        if collision_warning:
+            self.update_navigation_variables(collision_warning)
+            return True
+
         # Calibrate force baseline
         self._calibrate_force_sensor_before_motion()
         # Force sensor acts only as a safety feature: stop and move up if any axis exceeds threshold.
         safety_warning = self._handle_force_sensor_safety()
+
+        collision_repulsion_warning = self._apply_collision_repulsion()
+        if collision_repulsion_warning:
+            self.update_navigation_variables(collision_repulsion_warning)
+            return True
 
         if self.objective == RobotObjective.NONE:
             success = self.handle_objective_none()
@@ -1397,3 +1432,147 @@ class RobotControl:
         if self.robot:
             self.on_set_objective({"objective": RobotObjective.NONE.value})
             self.robot.clean_errors()
+
+    def _update_collision_from_tracker_poses(self, poses, visibilities, timestamp):
+        try:
+            result = self.collision_tracker.update_from_tracker_poses(
+                poses,
+                visibilities,
+                self.matrix_tracker_to_robot,
+                lambda: self.process_tracker.head_center_from_tracker_poses(
+                    poses, visibilities, self.matrix_tracker_to_robot
+                ),
+                timestamp,
+            )
+        except (IndexError, TypeError, ValueError, RuntimeError) as error:
+            self._stop_on_collision_error(error)
+            return False
+
+        if result is None:
+            return False
+        stage, distance = result
+        if stage is CollisionStage.STOP:
+            self._activate_collision_stop(f"Coil collision stop at {distance:.2f} mm")
+        elif not self.collision_avoidance.stop_latched:
+            self._clear_collision_stop()
+        return True
+
+    def _stop_on_collision_error(self, error):
+        self.collision_avoidance.latch_stop()
+        self._activate_collision_stop(f"Coil collision safety error: {error}")
+
+    def on_set_collision_registrations(self, data):
+        try:
+            coil_index = data["coil_idx"]
+            self.collision_tracker.set_registrations(
+                data["registrations"], coil_index, **const.COIL_COLLISION_GEOMETRY_CONFIG
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            print(f"Invalid coil collision registrations: {error}")
+            return False
+
+        self.coil_index = coil_index
+        print("Coil collision registrations set")
+        return True
+
+    def _compute_collision_command(self):
+        now = time.monotonic()
+        delta_time = now - self._last_collision_command_time
+        self._last_collision_command_time = now
+        return self.collision_avoidance.compute_command(delta_time)
+
+    def _collision_stop_reason(self):
+        if self.collision_avoidance.stop_latched:
+            return "Coil collision emergency stop is latched"
+        if not self.collision_avoidance.has_measurement:
+            return "Coil collision measurement is unavailable"
+        return "Coil collision measurements are stale"
+
+    def _activate_collision_stop(self, reason):
+        first_activation = not self._collision_safety_active
+        self._collision_warning = reason
+        self._collision_repulsion_active = False
+        self._collision_safety_active = True
+        if first_activation:
+            print(reason)
+
+        if self.robot is None or self._collision_stop_commanded:
+            return
+
+        self._collision_stop_commanded = self.stop_robot()
+
+    def _clear_collision_stop(self):
+        self._collision_safety_active = False
+        self._collision_stop_commanded = False
+        self._collision_warning = None
+
+    def _enforce_collision_stop(self):
+        if self.collision_avoidance.stop_requested():
+            self._activate_collision_stop(self._collision_stop_reason())
+            return self._collision_warning
+
+        if self._collision_safety_active:
+            self._clear_collision_stop()
+        return None
+
+    def _apply_collision_repulsion(self):
+        command = self._compute_collision_command()
+        if command.stop_requested:
+            self._activate_collision_stop(self._collision_stop_reason())
+            return self._collision_warning
+
+        active_stages = (CollisionStage.APPROACH, CollisionStage.WORKING)
+        if command.stage not in active_stages:
+            self._collision_repulsion_active = False
+            return None
+
+        # With no automatic objective, do not unexpectedly move the robot or
+        # compete with free-drive. The hard-stop watchdog remains active.
+        if self.objective is RobotObjective.NONE:
+            self._collision_repulsion_active = False
+            return None
+
+        state = self.robot_state_controller.get_state()
+        if state not in (
+            RobotState.READY,
+            RobotState.START_MOVING,
+            RobotState.MOVING,
+        ):
+            self._collision_repulsion_active = False
+            return None
+
+        robot_pose = self.robot_pose_storage.GetRobotPose()
+        if robot_pose is None or len(robot_pose) < 6:
+            self._stop_on_collision_error("Robot pose is unavailable")
+            return self._collision_warning
+
+        if not self._collision_repulsion_active:
+            self.movement_algorithm.reset_state()
+            self._collision_repulsion_active = True
+
+        try:
+            offset = self.collision_tracker.constrain_repulsion_offset(command.offset)
+        except (TypeError, ValueError, RuntimeError) as error:
+            self._stop_on_collision_error(error)
+            return self._collision_warning
+
+        target = np.asarray(robot_pose, dtype=float).copy()
+        target[:3] += offset
+        working_space_radius = self.robot_config["working_space_radius"]
+        current_radius = np.linalg.norm(np.asarray(robot_pose, dtype=float)[:3])
+        target_radius = np.linalg.norm(target[:3])
+        if target_radius >= working_space_radius and target_radius >= current_radius:
+            self._stop_on_collision_error(
+                "Coil repulsion target is outside the robot working space"
+            )
+            return self._collision_warning
+        speed_ratio = self.config["tuning_speed_ratio"]
+        success = self.robot.dynamic_motion(target.tolist(), speed_ratio)
+        if not success:
+            self._stop_on_collision_error(
+                "Robot rejected the coil repulsion movement"
+            )
+            return self._collision_warning
+
+        self.robot_state_controller.set_state_to_start_moving()
+        return f"Coil collision avoidance active ({command.stage.value})"

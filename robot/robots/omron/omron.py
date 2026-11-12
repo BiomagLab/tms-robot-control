@@ -1,3 +1,10 @@
+"""Omron TM5X-700 robot driver.
+
+Pose and status are read over Modbus TCP. Motion commands go over the TMFlow
+script socket on port 5890. Set ``ROBOT=omron`` and a matching site entry in
+``.env`` before connecting.
+"""
+
 import time
 from socket import AF_INET, SOCK_STREAM, socket
 
@@ -12,6 +19,8 @@ class Omron(Robot):
     PORT = 5890
     RESPONSE_LENGTH = 1024
     DEFAULT_SCRIPT_ID = 0
+
+    # Modbus input-register addresses used by the TMFlow project.
     modbus_addresses = {
         'start' : 7104,
         'stop' : 7105,
@@ -56,7 +65,6 @@ class Omron(Robot):
         self.last_target = None
         self.free_drive = False
 
-
     def connect(self):
         """
         Connect to the robot.
@@ -92,14 +100,9 @@ class Omron(Robot):
                     return False
 
             result = self.modbus.write_coil(self.modbus_addresses['stop'], True)
-            # self.last_start = False
             if not result.isError():
                 time.sleep(1)
-                # if self.last_start == True:
-                #     result = self.modbus.write_coil(self.modbus_cmds['stop'], True)
-                #     self.last_start = False
                 result = self.modbus.write_coil(self.modbus_addresses['start'], True)
-                # self.last_start = True
                 if not result.isError():
                     self.socket = socket(AF_INET, SOCK_STREAM)
                     self.socket.setblocking(True)
@@ -127,7 +130,6 @@ class Omron(Robot):
             self.socket.close()
             time.sleep(0.5)
             self.modbus.write_coil(self.modbus_addresses['stop'], True)
-            # self.last_start = False
             self.connected = False
             self.modbus.close()
             success = True
@@ -149,40 +151,13 @@ class Omron(Robot):
           [x, y, z, rx, ry, rz], where x, y, z are in mm and rx, ry, rz are
           Euler angles in degrees (sxyz convention).
         """
-        # The socket-based implementation was replaced with Modbus.
-        # timestamp_tag = str(time.time()).replace('.','_')
-        # command = f'float[] f_{timestamp_tag} = Robot[0].CoordRobot\r\nListenSend(91,f_{timestamp_tag})'
-        # response_check = lambda s: s[:6]==b'$TMSTA' and s.split(b',')[2] == b'91'
-        # success, raw_response = self.__format_and_send_request(command, 'TMSCT', expect_response = True, response_format_check_func = response_check, verbose=True)
-        # print(f'rawr{raw_response}')
-        # coordinates = struct.unpack('<6f', raw_response.split(b',')[3])
-
+        # Read the six pose values from the Modbus input registers.
         coordinates = [self.__read_modbus_float32(addrs) for addrs in ['get_x', 'get_y', 'get_z', 'get_rx', 'get_ry', 'get_rz', ]]
         if any(c is None for c in coordinates):
             # A Modbus read failed -- report a failed update instead of a
             # coordinate list containing None (which would crash the caller).
             return False, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        success = True
-
-        # command = f'ListenSend(91,Robot[0].CoordRobot)'
-        # response_check = lambda s: s[:6]==b'$TMSTA' and s.split(b',')[2] == b'91'
-
-        # start = time.time()
-        # success, raw_response = self.__format_and_send_request(command, 'TMSCT', expect_response = True, response_format_check_func = response_check, verbose=False)
-        # print(f'sendandreceivegetPOSE:{time.time() - start}')
-        # print(f'pid{os.getpid()}')
-        # while not success:
-        #     print('failed message, project stopped')
-        #     quit()
-        #     self.connect()
-        #     print('reconnected')
-        #     success, raw_response = self.__format_and_send_request(command, 'TMSCT', expect_response = True, response_format_check_func = response_check, verbose=False)
-        # comma_inds = [i for i, b in enumerate(raw_response) if b == ord(',')]
-        # coordinates = list(struct.unpack('<6f', raw_response[comma_inds[2]+1:comma_inds[-1]]))
-
-        return success, coordinates
-
-
+        return True, coordinates
 
     def is_moving(self):
         """
@@ -194,20 +169,9 @@ class Omron(Robot):
         speed = self.__read_modbus_float32('get_tcp_speed')
         if speed is None:
             return None
-        # command = f'{self.current_move_tag}'
-        # response_check = lambda s: s[:6]==b'$TMSTA' and s.split(b',')[2] == b'01' and s.split(b',')[3] == str(self.current_move_tag).encode()
-        # success, raw_response = self.__format_and_send_request(command, 'TMSTA', expect_response = True, response_format_check_func = response_check, verbose = False)
-        # while not success:
-        #     print('failed message, reconnecting')
-        #     self.connect()
-        #     print('reconnected')
-        #     success, raw_response = self.__format_and_send_request(command, 'TMSTA', expect_response = True, response_format_check_func = response_check, verbose = False)
-        # data = raw_response.decode('utf-8').split(',')[4]
-
-        # The state machine uses this as a plain bool: a tuple is always
-        # truthy, so returning one would leave the state machine in MOVING.
+        # The state machine uses this as a plain bool: a tuple would be
+        # truthy and leave the state machine in MOVING.
         return speed > 0.8
-
 
     def get_error_state(self):
         project_running = self.__read_modbus_int16('project_running')
@@ -221,7 +185,6 @@ class Omron(Robot):
         elif emergency_stopped == 1:
             return "Emergency Stopped"
         return None
-
 
     def is_error_state(self):
         """
@@ -246,9 +209,6 @@ class Omron(Robot):
         :param speed_ratio: The speed of the movement (as a proportion of the maximum speed; 0-1).
         """
         print(f"move_linear called with speed_ratio = {speed_ratio}")
-        # command = (f'Line("CAP", '
-        #            f'{target[0]}, {target[1]}, {target[2]}, {target[3]}, {target[4]}, {target[5]}, '
-        #            f'{int(speed_ratio*1000)}, 0, 100, true)')
         command = f'Line("CPP", {target[0]}, {target[1]}, {target[2]}, {target[3]}, {target[4]}, {target[5]}, {int(speed_ratio * 100)}, 0, 100, true)'
         success, _ = self.__format_and_send_request(command, 'TMSCT', append_tag=True, verbose = False)
         return success
@@ -275,7 +235,6 @@ class Omron(Robot):
         success, _ = self.__format_and_send_request(command, 'TMSCT', append_tag = True, verbose = False)
         return success
 
-    # NOTE: THIS MIGHT NOT BE NEEDED BUT MIGHT ALSO NEED TO JUST PASS FORWARD TO move_linear (see elfin script)
     def dynamic_motion(self, target, speed_ratio):
         """
         Change the robot movement dynamically/immediately in a linear path to the target in robot's base coordinate system
@@ -287,7 +246,6 @@ class Omron(Robot):
         :param speed_ratio: The speed of the movement (as a proprecvortion of the maximum speed; 0-1).
         """
         return self.move_linear(target=target, speed_ratio=speed_ratio)
-
 
     def stop_robot(self):
         """
@@ -312,7 +270,6 @@ class Omron(Robot):
         self.free_drive = True
         print('Free drive enabled - Robot Controller frozen\n(Switch to Manual mode to move the robot)')
 
-
     def disable_free_drive(self):
         """ reconnects to the robot/project after free drive has been completed """
         print('Exiting free drive...')
@@ -320,9 +277,6 @@ class Omron(Robot):
         self.connect()
         print('Free drive disabled - Robot Controller resumed')
 
-
-
-    # This is never called...
     def close(self):
         """
         Perform necessary cleanup and disconnection procedures for the robot.
@@ -348,16 +302,14 @@ class Omron(Robot):
     def __read_modbus_float32(self, command):
         fc = self.modbus_fcs[command]
         address = self.modbus_addresses[command]
+        val = None
         # Read 2 input registers (32-bit float = 2 x 16-bit registers)
         if fc == 1:
             print("Error: Parsing for function code 1 not implemented")
-            #result = self.modbus.read_coils(address, count=2)
         elif fc == 2:
             print("Error: Parsing for function code 2 not implemented")
-            #result = self.modbus.read_discrete_inputs(address, count=2)
         elif fc == 3:
             print("Error: Parsing for function code 3 not implemented")
-           # result = self.modbus.read_holding_registers(address, count=2)
         elif fc == 4:
             result = self.modbus.read_input_registers(address, count=2)
             if result is None or result.isError():
@@ -375,9 +327,9 @@ class Omron(Robot):
     def __read_modbus_int16(self, command):
         fc = self.modbus_fcs[command]
         address = self.modbus_addresses[command]
+        result = None
         if fc == 1:
             print("Error: Parsing for function code 1 not implemented")
-            #result = self.modbus.read_coils(address, count=1)
         elif fc == 2:
             result = self.modbus.read_discrete_inputs(address, count=1)
             if result is None or result.isError():
@@ -386,18 +338,19 @@ class Omron(Robot):
             return result.bits[0]
         elif fc == 3:
             print("Error: Parsing for function code 3 not implemented")
-            #result = self.modbus.read_holding_registers(address, count=1)
         elif fc == 4:
             result = self.modbus.read_input_registers(address, count=1)
             if result is None or result.isError():
                 print(f"W: Modbus read failed for '{command}'.")
                 return None
         else:
-            result = None
             print(f"Function code '{fc}' does not exist!")
 
-        val = self.modbus.convert_from_registers(result.registers, data_type=self.modbus.DATATYPE.INT16, word_order="big")
-        return val
+        if result is None:
+            return None
+        return self.modbus.convert_from_registers(
+            result.registers, data_type=self.modbus.DATATYPE.INT16,
+            word_order="big")
 
     def __calc_checksum(self, data):
         """ calculates the checksum, used as part of the request to the Omron PC used by __format_and_send_request. Explained in the TM robot script protocol documentation """
@@ -409,27 +362,19 @@ class Omron(Robot):
         return checksum
 
     def __format_and_send_request(self, command, header, append_tag=False, expect_response=False, response_format_check_func=None, verbose=False):
-        """ Sends commands to the Omron robot PC. Explained in the TM robot script protocol documentation """
-        # NOTE: tags are no longer used as we use Modbus, so the associated code is commented out
+        """Send a command over the TM script socket."""
         success = True
         raw_response = None
 
         if header == "TMSCT":
-            # if append_tag:
-            #     self.current_move_tag += 1
-            #     if self.current_move_tag == 16:
-            #         self.current_move_tag = 1
-            #     tag_command = f'QueueTag({self.current_move_tag},0)'
-            #     command = f"{'StopAndClearBuffer()'}\r\n{command}\r\n{tag_command}"
-
-            # script id is needed for a valid request but we have no need for it presently, so it is defaulted to 0.
+            # The script id is required by the protocol; this driver uses 0.
             length = len(f"{self.DEFAULT_SCRIPT_ID},{command}")
             # checksum is structured as * followed by the hexadecimal of the checksum excluding "0x".
             checksum = self.__calc_checksum(f"{header},{length},{self.DEFAULT_SCRIPT_ID},{command},")
             checksum_formatted = "*{:02X}".format(checksum)
             full_message = f"${header},{length},{self.DEFAULT_SCRIPT_ID},{command},{checksum_formatted}\r\n"
         else:
-            # script id is needed for a valid request but we have no need for it presently, so it is defaulted to 0.
+            # The script id is required by the protocol; this driver uses 1.
             length = len(f"01,{command}")
             # checksum is structured as * followed by the hexadecimal of the checksum excluding "0x".
             checksum = self.__calc_checksum(f"{header},{length},01,{command},")
@@ -454,7 +399,6 @@ class Omron(Robot):
                 time.sleep(0.001)
         except BlockingIOError:
             pass
-
 
         try:
             self.socket.setblocking(True)

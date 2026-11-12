@@ -30,6 +30,12 @@ SITE_CONFIG = {
         "ry_offset": 0,
         "rz_offset": 0,
     },
+    # Omron TM5X-700 at MPI CBS: the coil needs a 180 degree rz offset.
+    "mpi": {
+        "rx_offset": 0,
+        "ry_offset": 0,
+        "rz_offset": 180,
+    },
     "default": {
         "rx_offset": 0,
         "ry_offset": 0,
@@ -122,6 +128,30 @@ ROBOT_CONFIG = {
         "sleep": 0.01,
         # Head motion
         "head_velocity_threshold": 120,
+        # Tuning motion
+        "distance_threshold_for_tuning": 30,
+        "angular_distance_threshold_for_tuning": 5,
+        # Arc motion
+        "distance_threshold_for_arc_motion": 80,
+        "angular_distance_threshold_for_arc_motion": 30,
+        "arc_bezier_curve_step": None,
+        "threshold_to_update_arc_motion_target": 40,
+        "versor_scale_factor": 50,
+        "middle_arc_scale_factor": 1.5,
+        # Robot tracker registration
+        "transformation_matrix_threshold": 1,
+        # Force and torque sensor
+        "force_sensor_threshold": 10,
+        "force_sensor_scale_threshold": 30,
+    },
+    "omron": {
+        # General
+        # The MPI cell uses a 1200 mm working-space limit.
+        "working_space_radius": 1200,
+        # The main loop polls several Modbus registers; do not spin flat out.
+        "sleep": 0.02,
+        # Head motion
+        "head_velocity_threshold": 60,
         # Tuning motion
         "distance_threshold_for_tuning": 30,
         "angular_distance_threshold_for_tuning": 5,

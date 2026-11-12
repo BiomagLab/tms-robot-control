@@ -10,3 +10,4 @@ pynput
 matplotlib==3.9.0
 scipy==1.14.0
 python-dotenv
+pymodbus>=3.6,<4

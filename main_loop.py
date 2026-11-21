@@ -38,6 +38,15 @@ class RemoteControl:
         self.__connected = False
 
     def __on_message_receive(self, msg):
+        tracker_topic = const.PUB_MESSAGES[const.FUNCTION_UPDATE_TRACKER_POSES]
+        if (
+            isinstance(msg, dict)
+            and msg.get("topic") == tracker_topic
+            and isinstance(msg.get("data"), dict)
+        ):
+            msg = msg.copy()
+            msg["data"] = msg["data"].copy()
+            msg["data"]["_received_at"] = time.monotonic()
         self.__lock.acquire()
         self.__buffer.append(msg)
         self.last_nav_update_time = time.time()  # Refresh on any incoming data
@@ -315,6 +324,7 @@ def main(connection=None):
                             const.FUNCTION_REQUEST_PID: robot_control.send_pid_factors,
                             const.FUNCTION_SET_COIL_INDEX: robot_control.on_set_coil_index,
                             const.FUNCTION_CLEAN_ERRORS: robot_control.on_clean_errors,
+                            const.FUNCTION_SET_COLLISION_REGISTRATIONS: robot_control.on_set_collision_registrations,
                         }
                         get_function[const.PUB_MESSAGES.index(topic[i])](msg_data)
 

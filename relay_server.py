@@ -41,14 +41,26 @@ app = socketio.ASGIApp(sio)
 @sio.event
 def from_neuronavigation(sid, msg):
     asyncio.create_task(sio.emit("to_robot", msg))
+    # Also send to the experiment pipeline.
+    asyncio.create_task(sio.emit("to_external_controller", msg))
     # print("Forwarding neuronavigation -> robot: %s" % str(msg))
 
 
 @sio.event
 def from_robot(sid, msg):
     asyncio.create_task(sio.emit("to_neuronavigation", msg))
+    # Also send to the experiment pipeline.
+    asyncio.create_task(sio.emit("to_external_controller", msg))
     # print("Forwarding robot -> neuronavigation: %s" % str(msg))
 
+
+@sio.event
+def from_external_controller(sid, msg):
+    # The experiment pipeline (cobot-pipeline-controller) speaks on this
+    # channel; forward its messages to the robot and the neuronavigation
+    # system, like the other channels do.
+    asyncio.create_task(sio.emit("to_robot", msg))
+    asyncio.create_task(sio.emit("to_neuronavigation", msg))
 
 @sio.event
 def restart_robot_main_loop(sid):

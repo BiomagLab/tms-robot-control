@@ -14,6 +14,7 @@ dependencies:
     - pynput
     - pyserial
     - python-dotenv
+    - pymodbus>=3.6,<4
     - python-socketio==5.11.3
     - uvicorn[standard]==0.30.1
     - websocket-client

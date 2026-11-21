@@ -551,6 +551,13 @@ class RobotControl:
             robot = ur.UniversalRobot(robot_ip)
             success = robot.connect()
 
+        elif robot_type == "omron":
+            # Imported lazily so the other robots do not require pymodbus.
+            import robot.robots.omron.omron as omron
+
+            robot = omron.Omron(robot_ip)
+            success = robot.connect()
+
         elif robot_type == "test":
             # TODO: Add 'test' robot here.
             pass
